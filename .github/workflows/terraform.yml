@@ -28,8 +28,8 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: AKIATFDUKHW7JH4TFLFC
-          aws-secret-access-key: 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
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
           aws-region: eu-north-1
 
