@@ -21,7 +21,7 @@ data "aws_ami" "ubuntu" {
 
 # 3. SECURITY GROUP (Allows SSH and Web Traffic)
 resource "aws_security_group" "app_sg" {
-  name        = "doctor-agent-sg"
+  name        = "doctor-agent-sg-s"
   description = "Allow SSH and HTTP"
 
   ingress {
