@@ -33,7 +33,7 @@ jobs:
       # 4. Initialize Terraform (Handles S3 Backend if configured)
       - name: Terraform Init
         run: terraform init
-        working-directory: ./terraform/terraform
+        working-directory: ./terraform/
 
       # 5. Build/Update Infrastructure
       - name: Terraform Apply
