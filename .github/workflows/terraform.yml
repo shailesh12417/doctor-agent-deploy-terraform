@@ -1,78 +1,93 @@
-# 1. TERRAFORM & PROVIDER CONFIGURATION
-terraform {
-  required_version = ">= 1.0"
-  # Uncomment the backend block after you create an S3 bucket manually in AWS
-  # backend "s3" {
-  #   bucket = "your-unique-s3-bucket-name"
-  #   key    = "state/terraform.tfstate"
-  #   region = "eu-north-1"
-  # }
-}
+name: Terraform + Deploy FastAPI
 
-provider "aws" {
-  region = "eu-north-1"
-}
+on:
+  push:
+    branches:
+      - main
 
-# 2. DATA SOURCE FOR UBUNTU 24.04
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"] # Canonical
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
 
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
-  }
-}
+    steps:
+      # 1. Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-# 3. SECURITY GROUP
-resource "aws_security_group" "app_sg" {
-  name        = "doctor-agent-sg-v2" # Incremented name to avoid conflicts
-  description = "Allow SSH and FastAPI Traffic"
+      # 2. Install Terraform CLI
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
 
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+      # 3. Configure AWS Credentials (Use Secrets for Security!)
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-north-1
 
-  ingress {
-    description = "FastAPI Port"
-    from_port   = 8000
-    to_port     = 8000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+      # 4. Initialize Terraform 
+      # FIX: Ensure this path matches where your main.tf actually lives
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
+      # 5. Build/Update Infrastructure
+      # FIX: Removed the extra "/terraform" from the path to match Step 4
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+        working-directory: ./terraform
 
-# 4. EC2 INSTANCE
-resource "aws_instance" "app_server1" {
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = "t3.micro"
-  key_name               = "terraform" 
-  vpc_security_group_ids = [aws_security_group.app_sg.id]
+      # 6. Capture the new Public IP address
+      - name: Get EC2 IP
+        id: tf_output
+        run: |
+          echo "EC2_IP=$(terraform -chdir=./terraform output -raw instance_public_ip)" >> $GITHUB_ENV
 
-  # Minimal user_data to ensure Python is ready for the GitHub Action
-  user_data = <<-EOF
-              #!/bin/bash
-              sudo apt-get update -y
-              sudo apt-get install -y python3-pip python3-venv git
-              EOF
-
-  tags = {
-    Name = "DoctorAgentServer"
-  }
-}
-
-# 5. OUTPUTS
-output "instance_public_ip" {
-  value = aws_instance.app_server1.public_ip
-}
+      # 7. SSH into EC2 and deploy the FastAPI app
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ env.EC2_IP }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            echo "🚀 Starting Deployment on EC2..."
+            
+            # System updates
+            sudo apt-get update -y
+            sudo apt-get install -y python3 python3-pip python3-venv git
+            
+            cd /home/ubuntu
+            
+            # Repository management
+            if [ ! -d "doctor-agent" ]; then
+              git clone https://github.com/shailesh12417/doctor-agent.git
+            fi
+            cd doctor-agent
+            git fetch origin
+            git reset --hard origin/main
+            
+            # Environment setup
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install --upgrade pip
+            if [ -f "requirements.txt" ]; then
+              pip install -r requirements.txt
+            fi
+            
+            # Cleanup existing process on port 8000
+            sudo fuser -k 8000/tcp || true
+            
+            # Start the application
+            export GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}"
+            nohup venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
+            
+            echo "✅ Deployment complete! App is live at http://${{ env.EC2_IP }}:8000"
