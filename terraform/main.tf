@@ -54,7 +54,7 @@ resource "aws_security_group" "app_sg" {
 }
 
 # 4. EC2 INSTANCE
-resource "aws_instance" "app_server" {
+resource "aws_instance" "app_server1" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t3.micro" 
   key_name               = "terraform" # Ensure this key exists in Stockholm!
