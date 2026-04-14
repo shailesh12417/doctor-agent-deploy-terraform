@@ -21,30 +21,36 @@ jobs:
       # 2. Install Terraform CLI
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
 
-      # 3. Configure AWS Credentials from Repository Secrets
+      # 3. Configure AWS Credentials (Use Secrets for Security!)
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: AKIATFDUKHW7JH4TFLFC
           aws-secret-access-key: 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
+
           aws-region: eu-north-1
 
-      # 4. Initialize Terraform (Handles S3 Backend if configured)
+      # 4. Initialize Terraform 
+      # FIX: Ensure this path matches where your main.tf actually lives
       - name: Terraform Init
         run: terraform init
-        working-directory: ./terraform/
+        working-directory: ./terraform
 
       # 5. Build/Update Infrastructure
+      # FIX: Removed the extra "/terraform" from the path to match Step 4
       - name: Terraform Apply
         run: terraform apply -auto-approve
-        working-directory: ./terraform/terraform
+        working-directory: ./terraform
 
       # 6. Capture the new Public IP address
       - name: Get EC2 IP
         id: tf_output
         run: |
-          echo "EC2_IP=$(terraform -chdir=./terraform/terraform output -raw instance_public_ip)" >> $GITHUB_ENV
+          echo "EC2_IP=$(terraform -chdir=./terraform output -raw instance_public_ip)" >> $GITHUB_ENV
+
       # 7. SSH into EC2 and deploy the FastAPI app
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
@@ -55,30 +61,34 @@ jobs:
           script: |
             set -e
             echo "🚀 Starting Deployment on EC2..."
-            # Update system and install dependencies
+            
+            # System updates
             sudo apt-get update -y
             sudo apt-get install -y python3 python3-pip python3-venv git
+            
             cd /home/ubuntu
-            # Clone repository if it's the first run, otherwise pull latest changes
+            
+            # Repository management
             if [ ! -d "doctor-agent" ]; then
               git clone https://github.com/shailesh12417/doctor-agent.git
             fi
             cd doctor-agent
             git fetch origin
             git reset --hard origin/main
-            # Setup Python Virtual Environment
+            
+            # Environment setup
             python3 -m venv venv
             source venv/bin/activate
             pip install --upgrade pip
             if [ -f "requirements.txt" ]; then
               pip install -r requirements.txt
             fi
-            # Kill any process currently running on port 8000 (standard for FastAPI)
-            sudo fuser -k 8000/tcp || true
-            # Inject the GROQ_API_KEY and start the application
-            export GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}"
             
-            # Start Uvicorn in the background using nohup
-            # Note: This assumes your FastAPI app is in a file named main.py
+            # Cleanup existing process on port 8000
+            sudo fuser -k 8000/tcp || true
+            
+            # Start the application
+            export GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}"
             nohup venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
+            
             echo "✅ Deployment complete! App is live at http://${{ env.EC2_IP }}:8000"
