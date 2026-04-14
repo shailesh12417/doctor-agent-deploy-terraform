@@ -1,106 +1,78 @@
-name: Terraform + Deploy FastAPI
+# 1. TERRAFORM & PROVIDER CONFIGURATION
+terraform {
+  required_version = ">= 1.0"
+  # Uncomment the backend block after you create an S3 bucket manually in AWS
+  # backend "s3" {
+  #   bucket = "your-unique-s3-bucket-name"
+  #   key    = "state/terraform.tfstate"
+  #   region = "eu-north-1"
+  # }
+}
 
-on:
-  push:
-    branches:
-      - main
+provider "aws" {
+  region = "eu-north-1"
+}
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
+# 2. DATA SOURCE FOR UBUNTU 24.04
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
 
-    steps:
-      # 1. Checkout repo
-      - name: Checkout code
-        uses: actions/checkout@v4
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+  }
+}
 
-      # 2. Setup Terraform
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_wrapper: false
+# 3. SECURITY GROUP
+resource "aws_security_group" "app_sg" {
+  name        = "doctor-agent-sg-v2" # Incremented name to avoid conflicts
+  description = "Allow SSH and FastAPI Traffic"
 
-      # 3. Configure AWS credentials
-      - name: Configure AWS
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: eu-north-1
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-      # 4. Verify AWS login (debug)
-      - name: Verify AWS
-        run: aws sts get-caller-identity
+  ingress {
+    description = "FastAPI Port"
+    from_port   = 8000
+    to_port     = 8000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-      # 5. Terraform Init
-      - name: Terraform Init
-        run: terraform init
-        working-directory: ./terraform
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
 
-      # 6. Terraform Apply
-      - name: Terraform Apply
-        run: terraform apply -auto-approve
-        working-directory: ./terraform
+# 4. EC2 INSTANCE
+resource "aws_instance" "app_server1" {
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = "t3.micro"
+  key_name               = "terraform" 
+  vpc_security_group_ids = [aws_security_group.app_sg.id]
 
-      # 7. Get EC2 Public IP
-      - name: Get EC2 IP
-        run: echo "EC2_IP=$(terraform -chdir=./terraform output -raw instance_public_ip)" >> $GITHUB_ENV
+  # Minimal user_data to ensure Python is ready for the GitHub Action
+  user_data = <<-EOF
+              #!/bin/bash
+              sudo apt-get update -y
+              sudo apt-get install -y python3-pip python3-venv git
+              EOF
 
-      # 8. Deploy FastAPI app via SSH
-      - name: Deploy to EC2
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ env.EC2_IP }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_KEY }}
-          port: 22
-          script: |
-            set -e
+  tags = {
+    Name = "DoctorAgentServer"
+  }
+}
 
-            echo "🚀 Starting FastAPI Deployment..."
-
-            # Update system
-            sudo apt-get update -y
-
-            # Install dependencies
-            sudo apt-get install -y python3 python3-pip python3-venv git
-
-            cd /home/ubuntu
-
-            # Clone repo if not exists
-            if [ ! -d "doctor-agent" ]; then
-              git clone https://github.com/shailesh12417/doctor-agent.git
-            fi
-
-            cd doctor-agent
-
-            # Pull latest code
-            git fetch origin
-            git reset --hard origin/main
-
-            # Setup virtual environment (only once)
-            if [ ! -d "venv" ]; then
-              python3 -m venv venv
-            fi
-
-            source venv/bin/activate
-
-            # Install dependencies
-            pip install --upgrade pip
-            pip install -r requirements.txt
-
-            # Kill old process
-            sudo fuser -k 8000/tcp || true
-
-            # Export environment variable (if needed)
-            export GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}"
-
-            # Start FastAPI app
-            nohup ./venv/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
-
-            sleep 3
-
-            echo "📄 App logs:"
-            cat app.log
-
-            echo "✅ Deployment completed!"
+# 5. OUTPUTS
+output "instance_public_ip" {
+  value = aws_instance.app_server1.public_ip
+}
