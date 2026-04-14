@@ -8,90 +8,99 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: production
-    permissions:
-      id-token: write
-      contents: read
 
     steps:
-      # 1. Checkout the repository
+      # 1. Checkout repo
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Install Terraform CLI
+      # 2. Setup Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
 
-      # 3. Configure AWS Credentials (Use Secrets for Security!)
+      # 3. Configure AWS credentials
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
           aws-region: eu-north-1
 
-      # 4. Initialize Terraform 
-      # FIX: Ensure this path matches where your main.tf actually lives
+      # 4. Verify AWS login (debug)
+      - name: Verify AWS
+        run: aws sts get-caller-identity
+
+      # 5. Terraform Init
       - name: Terraform Init
         run: terraform init
         working-directory: ./terraform
 
-      # 5. Build/Update Infrastructure
-      # FIX: Removed the extra "/terraform" from the path to match Step 4
+      # 6. Terraform Apply
       - name: Terraform Apply
         run: terraform apply -auto-approve
         working-directory: ./terraform
 
-      # 6. Capture the new Public IP address
+      # 7. Get EC2 Public IP
       - name: Get EC2 IP
-        id: tf_output
-        run: |
-          echo "EC2_IP=$(terraform -chdir=./terraform output -raw instance_public_ip)" >> $GITHUB_ENV
+        run: echo "EC2_IP=$(terraform -chdir=./terraform output -raw instance_public_ip)" >> $GITHUB_ENV
 
-      # 7. SSH into EC2 and deploy the FastAPI app
+      # 8. Deploy FastAPI app via SSH
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ env.EC2_IP }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
           script: |
             set -e
-            echo "🚀 Starting Deployment on EC2..."
-            
-            # System updates
+
+            echo "🚀 Starting FastAPI Deployment..."
+
+            # Update system
             sudo apt-get update -y
+
+            # Install dependencies
             sudo apt-get install -y python3 python3-pip python3-venv git
-            
+
             cd /home/ubuntu
-            
-            # Repository management
+
+            # Clone repo if not exists
             if [ ! -d "doctor-agent" ]; then
               git clone https://github.com/shailesh12417/doctor-agent.git
             fi
+
             cd doctor-agent
+
+            # Pull latest code
             git fetch origin
             git reset --hard origin/main
-            
-            # Environment setup
-            python3 -m venv venv
-            source venv/bin/activate
-            pip install --upgrade pip
-            if [ -f "requirements.txt" ]; then
-              pip install -r requirements.txt
-            fi
-            
-            cd /home/ubuntu/doctor-agent
 
-            # Ensure we are in the directory where main.py exists
-            # If main.py is in a 'src' folder, use: cd src
-          
-            # Check if the port is stuck and force kill it
+            # Setup virtual environment (only once)
+            if [ ! -d "venv" ]; then
+              python3 -m venv venv
+            fi
+
+            source venv/bin/activate
+
+            # Install dependencies
+            pip install --upgrade pip
+            pip install -r requirements.txt
+
+            # Kill old process
             sudo fuser -k 8000/tcp || true
 
-            # Start with the full path to the virtualenv uvicorn
+            # Export environment variable (if needed)
             export GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}"
+
+            # Start FastAPI app
             nohup ./venv/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
+
+            sleep 3
+
+            echo "📄 App logs:"
+            cat app.log
+
+            echo "✅ Deployment completed!"
