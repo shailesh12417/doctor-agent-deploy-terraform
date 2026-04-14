@@ -21,7 +21,7 @@ data "aws_ami" "ubuntu" {
 
 # 3. SECURITY GROUP (Allows SSH and Web Traffic)
 resource "aws_security_group" "app_sg" {
-  name        = "doctor-agent-sg-s"
+  name        = "doctor-agent-sg-s-s"
   description = "Allow SSH and HTTP"
 
   ingress {
@@ -54,7 +54,7 @@ resource "aws_security_group" "app_sg" {
 }
 
 # 4. EC2 INSTANCE
-resource "aws_instance" "app_server1" {
+resource "aws_instance" "app_server12" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t3.micro" 
   key_name               = "terraform" # Ensure this key exists in Stockholm!
@@ -77,5 +77,5 @@ resource "aws_instance" "app_server1" {
 # 5. OUTPUTS (Prints the IP to your terminal)
 output "instance_public_ip" {
   description = "Public IP address of the EC2 instance"
-  value       = aws_instance.app_server1.public_ip
+  value       = aws_instance.app_server12.public_ip
 }
